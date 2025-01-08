@@ -1,0 +1,11 @@
+pandas
+boto3 
+confluent-kafka 
+Faker 
+pydantic 
+requests 
+SQLalchemy 
+streamlit 
+python-dotenv 
+chardet
+psycopg2-binary

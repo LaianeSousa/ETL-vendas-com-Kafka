@@ -1,0 +1,120 @@
+services:
+  zookeeper:
+    platform: linux/amd64
+    image: confluentinc/cp-zookeeper:${CONFLUENT_PLATFORM_VERSION:-7.4.0}
+    container_name: zookeeper
+    restart: unless-stopped
+    ports:
+      - "2181:2181"
+    environment:
+      ZOOKEEPER_SERVER_ID: 1
+      ZOOKEEPER_CLIENT_PORT: 2181
+      ZOOKEEPER_TICK_TIME: 2000
+    networks:
+      - kafka
+
+  sales:  # Kafka broker
+    platform: linux/amd64
+    image: confluentinc/cp-kafka:${CONFLUENT_PLATFORM_VERSION:-7.4.0}
+    container_name: sales
+    restart: unless-stopped
+    ports:
+      - "9092:9092"
+    depends_on:
+      - zookeeper
+    environment:
+      KAFKA_BROKER_ID: 1
+      KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://sales:9092
+      KAFKA_LISTENERS: PLAINTEXT://0.0.0.0:9092
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: 'true'
+    networks:
+      - kafka
+
+  kafka-init:
+    image: confluentinc/cp-kafka:7.4.0
+    depends_on:
+      - sales
+    command: >
+      sh -c "
+        kafka-topics --create --bootstrap-server sales:9092 --topic postgres-db --partitions 1 --replication-factor 1 &&
+        kafka-topics --create --bootstrap-server sales:9092 --topic file-generated --partitions 1 --replication-factor 1 &&
+        kafka-topics --create --bootstrap-server sales:9092 --topic S3-bucket --partitions 1 --replication-factor 1
+      "
+    networks:
+      - kafka
+
+
+  kafka-ui:
+    image: provectuslabs/kafka-ui:latest
+    container_name: kafka-ui
+    ports:
+      - "8087:8080"
+    environment:
+      # Local Kafka broker configuration
+      KAFKA_CLUSTERS_0_NAME: sales-local
+      KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS: sales:9092
+      KAFKA_CLUSTERS_0_CONSUMER_GROUP_ID: etl-group
+    depends_on:
+      - sales  # Local Kafka broker dependency
+    networks:
+      - kafka
+
+
+  postgres:
+    image: postgres:latest
+    restart: always
+    container_name: postgres_db
+    env_file:
+      - .env
+    environment:
+      - POSTGRES_USER=${POSTGRES_USER}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
+      - POSTGRES_DB=${POSTGRES_DB}
+    ports:
+      - "5433:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./init_sales_data.sql:/docker-entrypoint-initdb.d/init_sales_data.sql 
+    networks:
+      - kafka
+
+
+  backend:
+    build:
+      context: ./src
+      dockerfile: backend/Dockerfile
+    container_name: etl_service
+    env_file:
+      - .env
+    depends_on:
+      - postgres
+      - sales
+    entrypoint: ["sh", "-c", "sleep 10 && python main.py"]
+    networks:
+      - kafka
+
+  frontend:
+    build:
+      context: ./src/frontend
+      dockerfile: Dockerfile
+    container_name: streamlit_app
+    env_file:
+      - .env
+    ports:
+      - "8501:8501"
+    depends_on:
+      - postgres
+      - backend
+    entrypoint: ["sh", "-c", "sleep 10 && streamlit run app.py --server.port=8501 --server.address=0.0.0.0"]
+    networks:
+      - kafka
+
+volumes:
+  postgres_data:
+
+networks:
+  kafka:
+    name: kafka
